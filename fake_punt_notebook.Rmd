@@ -1,0 +1,493 @@
+---
+title: "Fake Punt Analysis"
+output: html_notebook
+---
+
+The object of this notebook is to determine what makes a successful fake punt. Psychology is the key to success in any type of "fake" play. Your opponent needs to think you are doing one thing, while you do something completely different before they realize what's happening.
+
+```{r}
+players <- read.csv('players.csv')
+games <- read.csv('games.csv')
+scouting <- read.csv('PFFScoutingData.csv')
+plays <- read.csv('plays.csv')
+track_2018 <- read.csv('tracking2018.csv')
+track_2019 <- read.csv('tracking2019.csv')
+track_2020 <- read.csv('tracking2020.csv')
+```
+
+
+```{r message = FALSE}
+#uncomment to install any necessary packages
+
+#install.packages('tidyverse')
+#install.packages('expss')
+#install.packages('rpart')
+#install.packages('rpart.plot')
+library(tidyverse)
+library(expss)
+library(rpart)
+library(rpart.plot)
+```
+
+The following step will isolate the fake punts in the dataset. Some of these "fake" punts were aborted punts, which means they were intended to be normal punts. Those will be removed from the dataset as well.
+
+```{r message = FALSE}
+non_spec <- plays %>%
+  filter(specialTeamsResult == 'Non-Special Teams Result')
+
+fake_punt <- non_spec %>%
+  filter(specialTeamsPlayType == 'Punt')
+
+aborted_punt <- fake_punt %>%
+  filter(str_detect(playDescription, 'Abort'))
+
+int_fake_punt <- anti_join(fake_punt, aborted_punt)
+
+int_fake_punt <- inner_join(scouting, int_fake_punt)
+```
+
+Next I will create two new variables to determine if the play was a pass or not, and if the play was successful or not (yard gained > yards to go).
+
+```{r}
+int_fake_punt <- int_fake_punt %>%
+  mutate(is_pass = !(is.na(passResult))) %>%
+  mutate(success = (yardsToGo - playResult) <= 0)
+```
+
+Narrowing down tracking data to only the relevant plays,
+and then combining them into one dataset.
+```{r message = FALSE}
+fp_2018 <- track_2018 %>%
+  inner_join(int_fake_punt) %>%
+  select(colnames(track_2018))
+
+fp_2019 <- track_2019 %>%
+  inner_join(int_fake_punt) %>%
+  select(colnames(track_2019))
+
+fp_2020 <- track_2020 %>%
+  inner_join(int_fake_punt) %>%
+  select(colnames(track_2020))
+
+tracking <- rbind(fp_2018, fp_2019, fp_2020)
+```
+
+As one would expect, having fewer yards to go until first down results in a higher chance of success. 
+```{r}
+ggplot(int_fake_punt, aes(x = success, y = yardsToGo)) +
+  geom_boxplot()
+```
+
+30 plays in the dataset are pass plays, and 38 are run plays. 71.1% (27/38) of fake punts that are run plays are successful as opposed to 63.3% (19/30) of pass plays.
+```{r}
+table(int_fake_punt$is_pass)
+
+int_fake_punt %>%
+  calculate(cro_rpct(is_pass, success)) %>%
+  htmlTable()
+```
+
+Based on this graph, run plays have a higher chance of success than pass plays until approximately 8 yards to go. However, the margins of error in the lines of fit are very wide, so it's unclear if this is actually the case.
+```{r}
+ggplot(int_fake_punt, aes(x = yardsToGo, y = as.numeric(success), color = is_pass ,group = is_pass)) +
+  geom_point() +
+  geom_smooth(method = 'glm',
+              method.args = list(family = 'binomial'),
+              se = TRUE)
+```
+
+This next step will bring the home/away status of the possessing team into our main dataset.
+```{r message = FALSE}
+unique_id <- unique(tracking[c('gameId', 'playId')])
+row.names(tracking) <- NULL
+
+home_away <- c()
+
+for(i in 1:nrow(unique_id)){
+  h <- unique(tracking[(tracking$gameId == unique_id$gameId[i]) &
+             (tracking$playId == unique_id$playId[i]) &
+             (tracking$position == 'P'), ]$team)[1]
+  home_away <- c(home_away, h)
+}
+
+home_away_df <- cbind(unique_id, home_away)
+
+int_fake_punt <- inner_join(int_fake_punt, home_away_df)
+```
+
+There are 34 fake punts by both home and away teams. 70.6% of away team plays are successful, as opposed to 64.7% of home team plays. This seems counterintuitive as "home team advantage" would suggest that the away team would be less successful.
+```{r}
+table(int_fake_punt$home_away)
+
+int_fake_punt %>%
+  calculate(cro_rpct(home_away, success)) %>%
+  htmlTable()
+```
+
+
+Based on the plot below, it looks like home teams have a higher chance of success until about 4 yards to go, and it starts dropping off. This may be because there are some "outlier" plays from home teams done from very far away. The farthest play from away teams was successful
+```{r}
+ggplot(int_fake_punt, aes(x = yardsToGo, y = as.numeric(success), color = home_away ,group = home_away)) +
+  geom_point() +
+  geom_smooth(method = 'glm',
+              method.args = list(family = 'binomial'),
+              se = TRUE)
+```
+
+The boxplot below shows that while home teams have more extreme tail values for yardsToGo, the median is actually lower. The higher success for away teams may just be a result of home teams willing to take bigger risks.
+```{r}
+ggplot(int_fake_punt, aes(x = home_away, y = yardsToGo)) +
+  geom_boxplot()
+```
+
+The current score before a fake punt may have a psychological impact on its success. If the team is currently losing, will that make them more determined to make a successful play? Or will it have the opposite effect?
+
+```{r}
+int_fake_punt <- int_fake_punt %>%
+  mutate(points_down = ifelse(home_away == 'home', preSnapVisitorScore - preSnapHomeScore,preSnapHomeScore - preSnapVisitorScore))
+```
+
+There doesn't appear to be any relationship between how many points down the possessing team is and the chance of success.
+```{r}
+ggplot(int_fake_punt, aes(x = success, y = points_down)) +
+  geom_boxplot()
+```
+
+```{r}
+ggplot(int_fake_punt, aes(x = points_down, y = as.numeric(success))) +
+  geom_point() +
+  geom_smooth(method = 'glm',
+              method.args = list(family = 'binomial'),
+              se = TRUE)
+```
+
+
+Is the ball on the possessing team's side? .... One observation is NA because the play was directly on the 50 yard line.
+```{r}
+int_fake_punt <- int_fake_punt %>%
+  mutate(poss_team_side = ifelse(possessionTeam == yardlineSide, TRUE, FALSE))
+```
+
+Slightly over half of fake punts on the opposing team's side of the field are successful, but over 70% of fake punts on the possessing team's side of the field are successful.
+```{r}
+##Replace this table later
+table(int_fake_punt$poss_team_side, int_fake_punt$success)
+
+chisq.test(table(int_fake_punt$poss_team_side, int_fake_punt$success))
+```
+
+Finding tackler positions (also for missed and assist tacklers)
+
+```{r}
+int_fake_punt <- int_fake_punt %>%
+  mutate(missed_tackler_team = word(int_fake_punt$missedTackler, 1)) %>%
+  mutate(missed_tackler_num = word(int_fake_punt$missedTackler, 2)) %>%
+  mutate(assist_tackler_team = word(int_fake_punt$assistTackler, 1)) %>%
+  mutate(assist_tackler_num = word(int_fake_punt$assistTackler, 2)) %>%
+  mutate(tackler_team = word(int_fake_punt$tackler, 1)) %>%
+  mutate(tackler_num = word(int_fake_punt$tackler, 2))
+```
+
+```{r}
+tackler_pos <- c()
+assist_tackler_pos <- c()
+missed_tackler_pos <- c()
+
+for(i in 1:nrow(unique_id)){
+  t <- unique(
+    tracking[(tracking$gameId == int_fake_punt$gameId[i]) &
+             (tracking$playId == int_fake_punt$playId[i]) &
+             (tracking$jerseyNumber == int_fake_punt$tackler_num[i]) &
+               tracking$team != int_fake_punt$home_away[i]
+             , ]$position)[1]
+  mt <- unique(
+    tracking[(tracking$gameId == int_fake_punt$gameId[i]) &
+             (tracking$playId == int_fake_punt$playId[i]) &
+             (tracking$jerseyNumber == int_fake_punt$missed_tackler_num[i]) &
+               tracking$team != int_fake_punt$home_away[i]
+             , ]$position)[1]
+  at <- unique(
+    tracking[(tracking$gameId == int_fake_punt$gameId[i]) &
+             (tracking$playId == int_fake_punt$playId[i]) &
+             (tracking$jerseyNumber == int_fake_punt$assist_tackler_num[i]) &
+               tracking$team != int_fake_punt$home_away[i]
+             , ]$position)[1]
+
+  #print(at)
+  tackler_pos <- c(tackler_pos, t)
+  missed_tackler_pos <- c(missed_tackler_pos, mt)
+  assist_tackler_pos <- c(assist_tackler_pos, at)
+}
+
+#tackler_df <- cbind(unique_id, tackler_pos)
+
+#int_fake_punt <- inner_join(int_fake_punt, home_away_df)
+
+```
+
+Wide Receivers, Cornerbacks and Free Safeties are the most common tacklers. Linebackers are teh most common assisting tacklers.
+```{r}
+table(tackler_pos)
+
+table(missed_tackler_pos)
+
+table(assist_tackler_pos)
+```
+
+Tackler position doesn't appear to be a significant factor in fake punt success (p-value = 0.6217). Generally fake punts are successful, and none of the positions have less than 50/50 chance in this dataset. 
+```{r message = FALSE warning = FALSE}
+int_fake_punt <- cbind(int_fake_punt, tackler_pos, missed_tackler_pos, assist_tackler_pos)
+
+table(int_fake_punt$tackler_pos, int_fake_punt$success)
+
+chisq.test(table(int_fake_punt$tackler_pos, int_fake_punt$success))
+```
+
+Similar to above, there doesn't seem to be a meaningful relationship between missed tackler position and sucess.
+```{r}
+table(int_fake_punt$missed_tackler_pos, int_fake_punt$success)
+
+chisq.test(table(int_fake_punt$missed_tackler_pos, int_fake_punt$success))
+```
+
+Despite a p-value > 0.1, there may be a relationship between assisting tackler position and success. All 3 plays with a linebacker as assist were failures, and LB is the only assisting tackle position that occured more than once.
+```{r}
+table(int_fake_punt$assist_tackler_pos, int_fake_punt$success)
+
+chisq.test(table(int_fake_punt$assist_tackler_pos, int_fake_punt$success))
+```
+
+The timing of different events may have an impact on fake punt success. Waiting too long may have an impact, because the other team will know what's happening and how to respond.
+
+Most "events" in the data are "None", so I will get rid of those and pivot the rest of the events. This will give me the frameId for each event for each play.
+```{r}
+unique(tracking$event)
+```
+
+```{r message = FALSE}
+tracking_events <- tracking %>%
+  select(c('gameId', 'playId', 'displayName', 'position', 'event', 'playDirection', 'frameId')) %>%
+  filter(event != 'None') %>%
+  filter(position == 'P') %>%
+  group_by(across(all_of(c('playId', 'gameId')))) %>%
+  pivot_wider(names_from = event, values_from = frameId) %>%
+  select(-c('position'))
+
+int_fake_punt <- inner_join(int_fake_punt, tracking_events)
+```
+
+There are some events that come up twice in one play, resulting in the event columns being "list-columns", so that needs to be fixed. Any events that appear more than once will get separate columns (these happen to be first_contact, handoff and pass_arrived).
+```{r message = FALSE}
+event_names <- unique(tracking[tracking$event != 'None' &
+                                   tracking$event != 'first_contact' &
+                                   tracking$event != 'handoff' &
+                                   tracking$event != 'pass_arrived', ]$event)
+
+int_fake_punt <- int_fake_punt %>%
+  unnest_wider(first_contact, names_sep = '_') %>%
+  unnest_wider(handoff, names_sep = '_') %>%
+  unnest_wider(pass_arrived, names_sep = '_') %>%
+  unnest(event_names, keep_empty = TRUE)
+```
+
+All snaps occur at frame 11.
+```{r}
+unique(int_fake_punt$ball_snap)
+```
+
+```{r}
+unique(int_fake_punt$snap_direct)
+```
+
+Plays with a normal snap versus a direct snap may have different rates of success.
+```{r}
+int_fake_punt <- int_fake_punt %>%
+  mutate(direct_snap = is.na(ball_snap))
+```
+
+The majority of plays are a normal snap. The chance of success for a snap vs direct snap play is as close as humanly possible in this dataset.
+```{r}
+table(int_fake_punt$direct_snap, int_fake_punt$success)
+
+chisq.test(table(int_fake_punt$direct_snap, int_fake_punt$success))
+```
+
+12 plays in the dataset do not even have a "punt fake" event. Is faking a punt necessary for a successful play?
+```{r}
+nrow(int_fake_punt[is.na(int_fake_punt$punt_fake), ])
+```
+
+```{r}
+int_fake_punt <- int_fake_punt %>%
+  mutate(fake = !(is.na(punt_fake)))
+```
+
+There doesn't seem to be any relation between whether a "punt fake" occurs and whether the play succeeds
+```{r}
+table(int_fake_punt$fake, int_fake_punt$success)
+
+chisq.test(table(int_fake_punt$fake, int_fake_punt$success))
+```
+
+
+Punt fake timing has a very uneven distribution, with a median of frame 21 (1 second after snap). There is one outlier at almost frame 60.
+
+```{r}
+ggplot(int_fake_punt, aes(x = punt_fake)) +
+  geom_histogram()
+```
+```{r}
+ggplot(int_fake_punt, aes(x = punt_fake)) +
+  geom_boxplot()
+```
+
+There seems to be no to little relationship between how quickly a punt fake occurs and success. The high-leverage point was removed.
+
+```{r}
+ggplot(int_fake_punt[int_fake_punt$punt_fake < 30, ], aes(x = punt_fake, y = as.numeric(success))) +
+  geom_point() +
+  geom_smooth(method = 'glm',
+              method.args = list(family = 'binomial'),
+              se = TRUE)
+```
+
+Plays from the left have a lower chance of success, but not quite enough to be statistically significant.
+```{r}
+table(int_fake_punt$playDirection, int_fake_punt$success)
+
+chisq.test(table(int_fake_punt$playDirection, int_fake_punt$success))
+```
+
+
+```{r}
+int_fake_punt <- int_fake_punt %>%
+  mutate(pass_delay = pass_forward - punt_fake)
+```
+
+Mean delay between punt fake and pass is 11.56 frames, which is 1.156 seconds.
+```{r}
+ggplot(int_fake_punt2, aes(x = pass_delay)) +
+  geom_histogram()
+
+ggplot(int_fake_punt2, aes(x = pass_delay)) +
+  geom_boxplot()
+
+
+mean(int_fake_punt2$pass_delay, na.rm = TRUE)
+```
+
+As expected, when it takes longer to pass, the chances of success decrease. Even with the high margin of error, this is very clear. Once the delay goes past 1 second (10 frames), the chance of success rapidly drops.
+```{r}
+ggplot(int_fake_punt2[int_fake_punt2$pass_delay < 30, ], aes(x = pass_delay, y = as.numeric(success))) +
+  geom_point() +
+  geom_smooth(method = 'glm',
+              method.args = list(family = 'binomial'),
+              se = TRUE)
+```
+
+```{r}
+int_fake_punt <- int_fake_punt %>%
+  mutate(run_delay = run - punt_fake)
+```
+
+Most runs start immediately after the fake punt (less than 5 frames).
+```{r}
+ggplot(int_fake_punt, aes(x = run_delay)) +
+  geom_histogram()
+```
+
+Unlike pass delay, run delay seems to have little to no effect on success. 
+```{r}
+ggplot(int_fake_punt[int_fake_punt$run_delay < 30, ], aes(x = run_delay, y = as.numeric(success))) +
+  geom_point() +
+  geom_smooth(method = 'glm',
+              method.args = list(family = 'binomial'),
+              se = TRUE)
+
+```
+
+(TO BE CONTINUED)
+The plays with no pass or run are all direct snaps.
+[Make a column that determines which category this falls into and compare!]
+```{r}
+no_delay <- int_fake_punt[(is.na(int_fake_punt2$pass_delay)) &
+                             (is.na(int_fake_punt2$run_delay)), ]
+
+no_delay$playDescription
+
+length(no_delay)
+#no_delay[no_delay$direct_snap == NA, ]
+```
+
+There is one more major thing I am going to look at. Since fake punts are centered around the punter himself, seeing how the punter moves on the field during the crucial first moments of play is almost certain to have valuable information.
+
+
+
+Looking at these different variables gives us a good idea of what things are important in determining success of a fake punt. However, it would be more valuable to see how everything interacts together. For that purpose, I will be using a basic decision tree. It will show every meaningful scenario and chance of success for each one (based on our data). 
+```{r message = FALSE}
+myvars <- c('success', 'quarter', 'yardsToGo', 'is_pass',
+            'home_away', 'points_down', 'poss_team_side',
+            'punt_fake', 'pass_delay', 'run_delay',
+            'fake')
+
+fp_tree <- int_fake_punt %>%
+  select(myvars)
+```
+
+```{r}
+fake_punt_tree <- rpart(success ~ ., data = fp_tree[!(is.na(fp_tree$punt_fake)), ])
+```
+
+Unsurprisingly, yardsToGo is by far the most important variable in determining success. The timing of punt fake and delay between punt fake and passing are also important. Everything else is either of minimial or no importance.
+```{r}
+fake_punt_tree$variable.importance
+```
+
+The fitted tree only uses yardsToGo, pass_delay, is_pass and punt_fake. If a play has less than 3.5 yards to go and is a pass, it has a 94% chance of success. By contrast, if there are more than 3.5 yards to go and the pass delay is greater than 12 frames, there is only a 38% chance of success.
+```{r}
+fancyRpartPlot(fake_punt_tree)
+```
+
+
+
+The plays with no pass or run are all direct snaps.
+[Make a column that determines which category this falls into and compare!]
+```{r}
+whats_this <- int_fake_punt[(is.na(int_fake_punt2$pass_delay)) &
+                             (is.na(int_fake_punt2$run_delay)), ]
+
+whats_this$playDescription
+```
+
+
+
+
+VIP seems to be Andy Lee.
+Anti-VIP seems to be Jordan Berry
+```{r}
+table(int_fake_punt$displayName, int_fake_punt$success)
+```
+
+Andy Lee's plays actually tend to be further away from first down than successful plays in general, further solidifying his status as fake punt king!
+```{r}
+mean(int_fake_punt[int_fake_punt$displayName == 'Andy Lee', ]$yardsToGo) -
+  mean(int_fake_punt[int_fake_punt$success == TRUE, ]$yardsToGo)
+```
+
+Andy Lee tends to fake punt quicker than average successful plays.
+```{r}
+mean(int_fake_punt[int_fake_punt$displayName == 'Andy Lee', ]$punt_fake) -
+  mean(int_fake_punt[int_fake_punt$success == TRUE, ]$punt_fake, na.rm = TRUE)
+```
+
+One of his plays had a very long pass delay and was still successful!
+```{r}
+int_fake_punt[int_fake_punt$displayName == 'Andy Lee', ]$pass_delay
+```
+
+```{r}
+int_fake_punt[int_fake_punt$displayName == 'Andy Lee', ]$run_delay
+```
+
+
+

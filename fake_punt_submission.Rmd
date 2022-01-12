@@ -1,0 +1,327 @@
+---
+title: "Fake Punts"
+output: html_notebook
+author: "Warren Hendricks"
+---
+
+The objective of this notebook is to determine what makes a successful fake punt. Psychology is the key to success in any type of "fake" play. Your opponent needs to think you are doing one thing, while you do something completely different before they realize what's happening.
+
+Success here is defined as playResult > yardsToGo. In other words, it means the play achieves at least a first down.
+
+Fake punts in this dataset are listed as a punt with a "non-special teams result". However, there are a few such plays that are described as "aborted" punts. Since aborted punts were intended to be true punts, those will not be included in this analysis.
+
+#### First I looked at attributes of the game/play itself:
+
+- How many yards to go
+
+- Home vs Away team (home team advantage)
+
+- Quarter (is a fake punt less expected earlier vs later on in the game?)
+
+- Pass vs Run
+
+- How many points behind the possessing team is
+
+- If the play happens on the possessing team's side of the field
+
+#### Next I looked at attributes of how the play itself is conducted:
+
+- Delay between snaps and punt fakes
+
+- Delay between punt fakes and passes/runs
+
+- How far the punter moves between snap and punt fake.
+
+- How quickly the punter moves between snap and punt fake per frame.
+
+The variables that seem meaningful will be put into a decision tree. The tree will be used to calculate variable importance, as well as some specific scenarios that are likely to lead to success or failure. 46 out of 68 (67.6%) plays in this dataset are successful.
+
+It is likely a no-brainer, but successful plays generally have fewer yards to go. The median for successful plays is 3 yards, and 5.5 yards for failed plays.
+
+
+```{r, include = FALSE}
+players <- read.csv('players.csv')
+games <- read.csv('games.csv')
+scouting <- read.csv('PFFScoutingData.csv')
+plays <- read.csv('plays.csv')
+track_2018 <- read.csv('tracking2018.csv')
+track_2019 <- read.csv('tracking2019.csv')
+track_2020 <- read.csv('tracking2020.csv')
+```
+
+```{r, include = FALSE}
+#uncomment to install any necessary packages
+
+#install.packages('tidyverse')
+#install.packages('expss')
+#install.packages('rpart')
+#install.packages('rpart.plot')
+#install.packages('expss')
+library(tidyverse)
+library(expss)
+library(rpart)
+library(rpart.plot)
+library(expss)
+```
+
+
+```{r, include = FALSE}
+#Removing true and aborted punts
+
+non_spec <- plays %>%
+  filter(specialTeamsResult == 'Non-Special Teams Result')
+
+fake_punt <- non_spec %>%
+  filter(specialTeamsPlayType == 'Punt')
+
+aborted_punt <- fake_punt %>%
+  filter(str_detect(playDescription, 'Abort'))
+
+int_fake_punt <- anti_join(fake_punt, aborted_punt)
+
+int_fake_punt <- inner_join(scouting, int_fake_punt)
+```
+
+
+```{r, include = FALSE}
+int_fake_punt <- int_fake_punt %>%
+  mutate(is_pass = !(is.na(passResult))) %>%
+  mutate(success = (yardsToGo - playResult) <= 0)
+```
+
+
+```{r, include = FALSE}
+fp_2018 <- track_2018 %>%
+  inner_join(int_fake_punt) %>%
+  select(colnames(track_2018))
+
+fp_2019 <- track_2019 %>%
+  inner_join(int_fake_punt) %>%
+  select(colnames(track_2019))
+
+fp_2020 <- track_2020 %>%
+  inner_join(int_fake_punt) %>%
+  select(colnames(track_2020))
+
+tracking <- rbind(fp_2018, fp_2019, fp_2020)
+```
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+ggplot(int_fake_punt, aes(x = success, y = yardsToGo)) +
+  geom_boxplot() +
+  labs(x = 'Success', y = 'Yards To Go')
+```
+
+```{r, include = FALSE}
+unique_id <- unique(tracking[c('gameId', 'playId')])
+row.names(tracking) <- NULL
+
+home_away <- c()
+
+for(i in 1:nrow(unique_id)){
+  h <- unique(tracking[(tracking$gameId == unique_id$gameId[i]) &
+             (tracking$playId == unique_id$playId[i]) &
+             (tracking$position == 'P'), ]$team)[1]
+  home_away <- c(home_away, h)
+}
+
+home_away_df <- cbind(unique_id, home_away)
+
+int_fake_punt <- inner_join(int_fake_punt, home_away_df)
+
+int_fake_punt <- int_fake_punt %>%
+  mutate(points_down = ifelse(home_away == 'home', preSnapVisitorScore - preSnapHomeScore,preSnapHomeScore - preSnapVisitorScore))
+```
+
+There seems to be a small, negative relationship between points down and success. This may just be an analog for which team is better. When playing against a team that's better than yours, the success of any play in general will be lower.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+ggplot(int_fake_punt, aes(x = points_down, y = as.numeric(success))) +
+  geom_point() +
+  geom_smooth(method = 'glm',
+              method.args = list(family = 'binomial'),
+              se = TRUE) +
+  labs(x = 'Points Behind', y = 'Success')
+```
+
+
+
+```{r, include = FALSE}
+tracking_events <- tracking %>%
+  select(c('gameId', 'playId', 'displayName', 'position', 'event', 'playDirection', 'frameId')) %>%
+  filter(event != 'None') %>%
+  filter(position == 'P') %>%
+  group_by(across(all_of(c('playId', 'gameId')))) %>%
+  pivot_wider(names_from = event, values_from = frameId) %>%
+  select(-c('position'))
+
+int_fake_punt <- inner_join(int_fake_punt, tracking_events)
+
+event_names <- unique(tracking[tracking$event != 'None' &
+                                   tracking$event != 'first_contact' &
+                                   tracking$event != 'handoff' &
+                                   tracking$event != 'pass_arrived', ]$event)
+
+int_fake_punt <- int_fake_punt %>%
+  unnest_wider(first_contact, names_sep = '_') %>%
+  unnest_wider(handoff, names_sep = '_') %>%
+  unnest_wider(pass_arrived, names_sep = '_') %>%
+  unnest(event_names, keep_empty = TRUE)
+
+int_fake_punt <- int_fake_punt %>%
+  mutate(direct_snap = is.na(ball_snap))
+
+int_fake_punt <- int_fake_punt %>%
+  mutate(fake = !(is.na(punt_fake)))
+
+int_fake_punt <- int_fake_punt %>%
+  mutate(pass_delay = pass_forward - punt_fake)
+
+int_fake_punt <- int_fake_punt %>%
+  mutate(run_delay = run - punt_fake)
+
+```
+
+```{r, include = FALSE}
+punters_only <- tracking[tracking$position == 'P', ]
+
+movement <- punters_only %>%
+  group_by(across(all_of(c('playId', 'gameId')))) %>%
+  summarise(snap_to_fake = dis[match('punt_fake', event)] -
+              dis[match('ball_snap', event)])
+
+movement2 <- punters_only %>%
+  group_by(across(all_of(c('playId', 'gameId')))) %>%
+  summarise(d_snap_to_fake = dis[match('punt_fake', event)] -
+              dis[match('snap_direct', event)])
+
+int_fake_punt <- int_fake_punt %>%
+  inner_join(movement) %>%
+  inner_join(movement2)
+```
+
+Punters generally move less between the snap and fake on successful plays, although there is one outlier.  
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+ggplot(int_fake_punt, aes(x = snap_to_fake, y = success)) +
+  geom_boxplot() +
+  labs(x = 'Total Movement between Snap and Punt Fake',
+       y = 'Success')
+```
+
+```{r, include = FALSE}
+int_fake_punt <- int_fake_punt %>%
+  mutate(snap_to_fake_pf = snap_to_fake/(punt_fake - 11)) %>%
+  mutate(d_snap_to_fake_pf = d_snap_to_fake/(punt_fake - 11))
+```
+
+This difference is even more pronounced once you include the number of frames in between snap and fake. The 75th percentile of punter movement per frame for successful plays is approximately the median for unsuccessful plays. 
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+ggplot(int_fake_punt, aes(x = snap_to_fake_pf, y = as.numeric(success))) +
+  geom_point() +
+  geom_smooth(method = 'glm',
+              method.args = list(family = 'binomial'),
+              se = TRUE) +
+  labs(x = 'Average Movement per Frame between Snap and Punt Fake', y = 'Success')
+
+ggplot(int_fake_punt, aes(x = snap_to_fake_pf, y = success)) +
+  geom_boxplot() +
+  labs(x = 'Average Movement per Frame between Snap and Punt Fake', y = 'Success')
+```
+There does appear to be a linear relationship between total movement between snap and fake and average movement per frame. However, it's very heteroskedastic, so it would be reasonable to include both of these variables in the final decision tree.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+ggplot(int_fake_punt, aes(x = snap_to_fake, y = snap_to_fake_pf)) +
+  geom_point() +
+  labs(x = 'Total Snap to Fake Movement', y = 'Snap to Fake Movement per Frame')
+```
+
+Some of these plays don't have a punt fake. As a workaround, I decided to look at the total movement and movement speed between the snap and the first event after the snap. The boxplot below shows that the successful plays have far less movement.
+```{r, include = FALSE}
+tracking_no_fake <- tracking %>%
+  inner_join(int_fake_punt[is.na(int_fake_punt$punt_fake), ]) %>%
+  select(colnames(tracking)) %>%
+  filter(event != 'None')
+
+tracking_no_fake2 <- tracking_no_fake %>%
+  mutate(frameId2 = frameId) %>%
+  mutate(event2 = event) %>%
+  group_by(across(all_of(c('playId', 'gameId')))) %>%
+  mutate(next_event_frame = ifelse(event[2] == 'snap_direct' | event[2] == 'ball_snap',frameId[3],frameId[2])) %>%
+  mutate(next_event = ifelse(event[2] == 'snap_direct' | event[2] == 'ball_snap', event[3], event[2])) %>%
+  mutate(bsnap_to_next = dis[match(next_event, event)] -
+           dis[match('ball_snap', event)]) %>%
+  mutate(dsnap_to_next = dis[match(next_event, event)] -
+           dis[match('snap_direct', event)]) %>%
+  mutate(snap_to_next = ifelse(is.na(bsnap_to_next), dsnap_to_next, bsnap_to_next)) %>%
+  select(c('gameId', 'playId', 'next_event', 'next_event_frame', 'snap_to_next')) %>%
+  distinct()
+
+int_fake_punt <- merge(int_fake_punt, tracking_no_fake2, all.x = TRUE)
+
+int_fake_punt <- int_fake_punt %>%
+  mutate(snap_to_next_pf = snap_to_next/(next_event_frame -11))
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+ggplot(int_fake_punt, aes(x = snap_to_next_pf, y = success)) +
+  geom_boxplot() +
+  labs(x = 'Avg. Movement per Frame between Snap and Next Event',
+       y = 'Success')
+```
+
+#### I selected the following variables for the decision tree:
+
+- Yards to go
+
+- Pass/Not a pass
+
+- How many points behind the possessing team is (points down)
+
+- Delay between snaps and punt fakes
+
+- Number of frames between punt fake and pass (pass delay)
+
+- All movement variables (total and average per frame)
+
+- Next event (in the case that there is no punt fake)
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+myvars <- c('success', 'yardsToGo', 'is_pass',
+            'points_down','punt_fake', 'pass_delay',
+            'snap_to_fake', 'd_snap_to_fake',
+            'snap_to_fake_pf', 'd_snap_to_fake_pf',
+            'snap_to_next', 'snap_to_next_pf', 'next_event',
+            'direct_snap')
+
+fp_tree <- int_fake_punt %>%
+  select(myvars)
+
+fake_punt_tree <- rpart(success ~ ., data = fp_tree
+                        ,control=rpart.control(minsplit=8, minbucket=4, cp=0.01))
+```
+
+
+Below is the variable importance table. By far, the most important variables are the total movement (snap_to_fake) and movement speed (snap_to_fake_pf) between the snap and punt fake. The timing of the punt fake and yards to go are also very important.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+fake_punt_tree$variable.importance
+```
+
+#### Some takeaways from this tree:
+
+If the snap is a normal snap, the punter moving quicker will generally result in a low chance of success. The #1 recipe for disaster is moving a shorter distance at a faster speed and taking longer to punt fake (0% chance of success in this dataset). The one exception to this is moving a longer total distance with fewer yards to go (83% chance of success).
+
+Every normal snap play where the punter moves more slowly is successful if there is a shorter pass delay, or if it is a run. If there is a longer delay, the chance of sucess is still high if the total movement is smaller than 0.045.
+
+Every play in this dataset without a punt fake is successful if the movement between snap and the following event is less than 0.3.
+
+#### In conclusion: 
+The punter should not move faster than 0.11 yards per second before the fake. And if passing, he shouldn't wait longer than 13 frames (1.3 seconds) after the fake to throw the pass.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+fancyRpartPlot(fake_punt_tree, sub = 'Fake Punt Success Tree')
+```
+
