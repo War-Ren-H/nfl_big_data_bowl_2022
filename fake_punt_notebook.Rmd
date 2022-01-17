@@ -16,7 +16,7 @@ track_2020 <- read.csv('tracking2020.csv')
 ```
 
 
-```{r message = FALSE}
+```{r, message = FALSE}
 #uncomment to install any necessary packages
 
 #install.packages('tidyverse')
@@ -31,7 +31,7 @@ library(rpart.plot)
 
 The following step will isolate the fake punts in the dataset. Some of these "fake" punts were aborted punts, which means they were intended to be normal punts. Those will be removed from the dataset as well.
 
-```{r message = FALSE}
+```{r, message = FALSE}
 non_spec <- plays %>%
   filter(specialTeamsResult == 'Non-Special Teams Result')
 
@@ -56,7 +56,7 @@ int_fake_punt <- int_fake_punt %>%
 
 Narrowing down tracking data to only the relevant plays,
 and then combining them into one dataset.
-```{r message = FALSE}
+```{r, message = FALSE}
 fp_2018 <- track_2018 %>%
   inner_join(int_fake_punt) %>%
   select(colnames(track_2018))
@@ -97,7 +97,7 @@ ggplot(int_fake_punt, aes(x = yardsToGo, y = as.numeric(success), color = is_pas
 ```
 
 This next step will bring the home/away status of the possessing team into our main dataset.
-```{r message = FALSE}
+```{r, message = FALSE}
 unique_id <- unique(tracking[c('gameId', 'playId')])
 row.names(tracking) <- NULL
 
@@ -147,7 +147,7 @@ int_fake_punt <- int_fake_punt %>%
   mutate(points_down = ifelse(home_away == 'home', preSnapVisitorScore - preSnapHomeScore,preSnapHomeScore - preSnapVisitorScore))
 ```
 
-There doesn't appear to be any relationship between how many points down the possessing team is and the chance of success.
+There appears to be a slight relationship between points down and success. Being behind in score is associated with a lower chance of success. This may just be a proxy variable for which team is "better" in general.
 ```{r}
 ggplot(int_fake_punt, aes(x = success, y = points_down)) +
   geom_boxplot()
@@ -168,7 +168,7 @@ int_fake_punt <- int_fake_punt %>%
   mutate(poss_team_side = ifelse(possessionTeam == yardlineSide, TRUE, FALSE))
 ```
 
-Slightly over half of fake punts on the opposing team's side of the field are successful, but over 70% of fake punts on the possessing team's side of the field are successful.
+Slightly over half of fake punts on the opposing team's side of the field are successful, but over 70% of fake punts on the possessing team's side of the field are successful. This doesn't seem to be a significant difference with a Chi-Square test.
 ```{r}
 ##Replace this table later
 table(int_fake_punt$poss_team_side, int_fake_punt$success)
@@ -225,7 +225,7 @@ for(i in 1:nrow(unique_id)){
 
 ```
 
-Wide Receivers, Cornerbacks and Free Safeties are the most common tacklers. Linebackers are teh most common assisting tacklers.
+Wide Receivers, Cornerbacks and Free Safeties are the most common tacklers. Linebackers are the most common assisting tacklers.
 ```{r}
 table(tackler_pos)
 
@@ -235,7 +235,7 @@ table(assist_tackler_pos)
 ```
 
 Tackler position doesn't appear to be a significant factor in fake punt success (p-value = 0.6217). Generally fake punts are successful, and none of the positions have less than 50/50 chance in this dataset. 
-```{r message = FALSE warning = FALSE}
+```{r, message = FALSE, warning = FALSE}
 int_fake_punt <- cbind(int_fake_punt, tackler_pos, missed_tackler_pos, assist_tackler_pos)
 
 table(int_fake_punt$tackler_pos, int_fake_punt$success)
@@ -260,11 +260,11 @@ chisq.test(table(int_fake_punt$assist_tackler_pos, int_fake_punt$success))
 The timing of different events may have an impact on fake punt success. Waiting too long may have an impact, because the other team will know what's happening and how to respond.
 
 Most "events" in the data are "None", so I will get rid of those and pivot the rest of the events. This will give me the frameId for each event for each play.
-```{r}
+```{r, warning = FALSE}
 unique(tracking$event)
 ```
 
-```{r message = FALSE}
+```{r, message = FALSE}
 tracking_events <- tracking %>%
   select(c('gameId', 'playId', 'displayName', 'position', 'event', 'playDirection', 'frameId')) %>%
   filter(event != 'None') %>%
@@ -336,6 +336,7 @@ Punt fake timing has a very uneven distribution, with a median of frame 21 (1 se
 ggplot(int_fake_punt, aes(x = punt_fake)) +
   geom_histogram()
 ```
+
 ```{r}
 ggplot(int_fake_punt, aes(x = punt_fake)) +
   geom_boxplot()
@@ -352,7 +353,7 @@ ggplot(int_fake_punt[int_fake_punt$punt_fake < 30, ], aes(x = punt_fake, y = as.
 ```
 
 Plays from the left have a lower chance of success, but not quite enough to be statistically significant.
-```{r}
+```{r, warning = FALSE}
 table(int_fake_punt$playDirection, int_fake_punt$success)
 
 chisq.test(table(int_fake_punt$playDirection, int_fake_punt$success))
@@ -420,6 +421,104 @@ length(no_delay)
 ```
 
 There is one more major thing I am going to look at. Since fake punts are centered around the punter himself, seeing how the punter moves on the field during the crucial first moments of play is almost certain to have valuable information.
+
+```{r, warnings = FALSE, message = FALSE}
+punters_only <- tracking[tracking$position == 'P', ]
+
+movement <- punters_only %>%
+  group_by(across(all_of(c('playId', 'gameId')))) %>%
+  summarise(snap_to_fake = dis[match('punt_fake', event)] -
+              dis[match('ball_snap', event)])
+
+movement2 <- punters_only %>%
+  group_by(across(all_of(c('playId', 'gameId')))) %>%
+  summarise(d_snap_to_fake = dis[match('punt_fake', event)] -
+              dis[match('snap_direct', event)])
+
+int_fake_punt <- int_fake_punt %>%
+  inner_join(movement) %>%
+  inner_join(movement2)
+```
+
+
+Punters generally move less between the snap and fake on successful plays, although there is one outlier.  
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+ggplot(int_fake_punt, aes(x = snap_to_fake, y = success)) +
+  geom_boxplot() +
+  labs(x = 'Total Movement between Snap and Punt Fake',
+       y = 'Success')
+```
+
+```{r, include = FALSE}
+int_fake_punt <- int_fake_punt %>%
+  mutate(snap_to_fake_pf = snap_to_fake/(punt_fake - 11)) %>%
+  mutate(d_snap_to_fake_pf = d_snap_to_fake/(punt_fake - 11))
+```
+
+This difference is even more pronounced once you include the number of frames in between snap and fake. The 75th percentile of punter movement per frame for successful plays is approximately the median for unsuccessful plays. 
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+ggplot(int_fake_punt, aes(x = snap_to_fake_pf, y = as.numeric(success))) +
+  geom_point() +
+  geom_smooth(method = 'glm',
+              method.args = list(family = 'binomial'),
+              se = TRUE) +
+  labs(x = 'Average Movement per Frame between Snap and Punt Fake', y = 'Success')
+
+ggplot(int_fake_punt, aes(x = snap_to_fake_pf, y = success)) +
+  geom_boxplot() +
+  labs(x = 'Average Movement per Frame between Snap and Punt Fake', y = 'Success')
+```
+
+There does appear to be a linear relationship between total movement between snap and fake and average movement per frame. However, it's very heteroskedastic, so it would be reasonable to include both of these variables in the final decision tree.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+ggplot(int_fake_punt, aes(x = snap_to_fake, y = snap_to_fake_pf)) +
+  geom_point() +
+  labs(x = 'Total Snap to Fake Movement', y = 'Snap to Fake Movement per Frame')
+```
+
+Some of these plays don't have a punt fake. As a workaround, I decided to look at the total movement and movement speed between the snap and the first event after the snap. The boxplot below shows that the successful plays have far less movement.
+```{r, warning = FALSE}
+tracking_no_fake <- tracking %>%
+  inner_join(int_fake_punt[is.na(int_fake_punt$punt_fake), ]) %>%
+  select(colnames(tracking)) %>%
+  filter(event != 'None')
+
+tracking_no_fake2 <- tracking_no_fake %>%
+  mutate(frameId2 = frameId) %>%
+  mutate(event2 = event) %>%
+  group_by(across(all_of(c('playId', 'gameId')))) %>%
+  mutate(next_event_frame = ifelse(event[2] == 'snap_direct' | event[2] == 'ball_snap',frameId[3],frameId[2])) %>%
+  mutate(next_event = ifelse(event[2] == 'snap_direct' | event[2] == 'ball_snap', event[3], event[2])) %>%
+  mutate(bsnap_to_next = dis[match(next_event, event)] -
+           dis[match('ball_snap', event)]) %>%
+  mutate(dsnap_to_next = dis[match(next_event, event)] -
+           dis[match('snap_direct', event)]) %>%
+  mutate(snap_to_next = ifelse(is.na(bsnap_to_next), dsnap_to_next, bsnap_to_next)) %>%
+  select(c('gameId', 'playId', 'next_event', 'next_event_frame', 'snap_to_next')) %>%
+  distinct()
+
+int_fake_punt <- merge(int_fake_punt, tracking_no_fake2, all.x = TRUE)
+
+int_fake_punt <- int_fake_punt %>%
+  mutate(snap_to_next_pf = snap_to_next/(next_event_frame -11))
+```
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+ggplot(int_fake_punt, aes(x = snap_to_next_pf, y = success)) +
+  geom_boxplot() +
+  labs(x = 'Avg. Movement per Frame between Snap and Next Event',
+       y = 'Success')
+```
+
+
+
+
+
+
+
 
 
 
