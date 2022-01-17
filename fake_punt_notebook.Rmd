@@ -23,10 +23,13 @@ track_2020 <- read.csv('tracking2020.csv')
 #install.packages('expss')
 #install.packages('rpart')
 #install.packages('rpart.plot')
+#install.packages('rattle')
+
 library(tidyverse)
 library(expss)
 library(rpart)
 library(rpart.plot)
+library(rattle)
 ```
 
 The following step will isolate the fake punts in the dataset. Some of these "fake" punts were aborted punts, which means they were intended to be normal punts. Those will be removed from the dataset as well.
@@ -422,7 +425,7 @@ length(no_delay)
 
 There is one more major thing I am going to look at. Since fake punts are centered around the punter himself, seeing how the punter moves on the field during the crucial first moments of play is almost certain to have valuable information.
 
-```{r, warnings = FALSE, message = FALSE}
+```{r, warning = FALSE, message = FALSE}
 punters_only <- tracking[tracking$position == 'P', ]
 
 movement <- punters_only %>%
@@ -472,7 +475,7 @@ ggplot(int_fake_punt, aes(x = snap_to_fake_pf, y = success)) +
 
 There does appear to be a linear relationship between total movement between snap and fake and average movement per frame. However, it's very heteroskedastic, so it would be reasonable to include both of these variables in the final decision tree.
 
-```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+```{r, warning = FALSE, message = FALSE, results = 'hide'}
 ggplot(int_fake_punt, aes(x = snap_to_fake, y = snap_to_fake_pf)) +
   geom_point() +
   labs(x = 'Total Snap to Fake Movement', y = 'Snap to Fake Movement per Frame')
@@ -520,9 +523,9 @@ ggplot(int_fake_punt, aes(x = snap_to_next_pf, y = success)) +
 
 
 
-
-
 Looking at these different variables gives us a good idea of what things are important in determining success of a fake punt. However, it would be more valuable to see how everything interacts together. For that purpose, I will be using a basic decision tree. It will show every meaningful scenario and chance of success for each one (based on our data). 
+
+
 ```{r message = FALSE}
 myvars <- c('success', 'quarter', 'yardsToGo', 'is_pass',
             'home_away', 'points_down', 'poss_team_side',
@@ -559,11 +562,11 @@ whats_this$playDescription
 ```
 
 
+To wrap things up, I will try to determine who the "best" and "worst" fake punters are in the NFL by looking at the number of attempts and success rate.
 
-
-VIP seems to be Andy Lee.
-Anti-VIP seems to be Jordan Berry
-```{r}
+The VIP is Andy Lee with 4 successful plays and no failures.
+The dud is Jordan Berry with 2 failures and no successes.
+```{r, warning = FALSE}
 table(int_fake_punt$displayName, int_fake_punt$success)
 ```
 
@@ -573,13 +576,37 @@ mean(int_fake_punt[int_fake_punt$displayName == 'Andy Lee', ]$yardsToGo) -
   mean(int_fake_punt[int_fake_punt$success == TRUE, ]$yardsToGo)
 ```
 
-Andy Lee tends to fake punt quicker than average successful plays.
+
+By sheer coincidence, Jordan Berry and Andy Lee have the exact same average yards to go in their plays. Andy's yards to go have higher variance, though.
+```{r}
+mean(int_fake_punt[int_fake_punt$displayName == 'Jordan Berry', ]$yardsToGo) -
+  mean(int_fake_punt[int_fake_punt$success == TRUE, ]$yardsToGo)
+```
+
+
+```{r}
+int_fake_punt[int_fake_punt$displayName == 'Andy Lee', ]$yardsToGo
+```
+
+```{r}
+int_fake_punt[int_fake_punt$displayName == 'Jordan Berry', ]$yardsToGo
+```
+
+
+Andy Lee tends to fake punt 0.2 seconds quicker than average successful plays.
 ```{r}
 mean(int_fake_punt[int_fake_punt$displayName == 'Andy Lee', ]$punt_fake) -
   mean(int_fake_punt[int_fake_punt$success == TRUE, ]$punt_fake, na.rm = TRUE)
 ```
 
-One of his plays had a very long pass delay and was still successful!
+Jordan Berry, on the other hand, punt fakes 0.123 seconds slower on average
+```{r}
+mean(int_fake_punt[int_fake_punt$displayName == 'Jordan Berry', ]$punt_fake) -
+  mean(int_fake_punt[int_fake_punt$success == TRUE, ]$punt_fake, na.rm = TRUE)
+```
+
+
+One of Andy's plays had a very long pass delay of 39 frames and was still successful! This defies the odds yet again!
 ```{r}
 int_fake_punt[int_fake_punt$displayName == 'Andy Lee', ]$pass_delay
 ```
@@ -588,5 +615,28 @@ int_fake_punt[int_fake_punt$displayName == 'Andy Lee', ]$pass_delay
 int_fake_punt[int_fake_punt$displayName == 'Andy Lee', ]$run_delay
 ```
 
+Jordan's plays do not have a pass or run delay, so let's see what's happening here by looking at the unique events in his plays.
+```{r}
+int_fake_punt[int_fake_punt$displayName == 'Jordan Berry', ]$pass_delay
+```
 
+```{r}
+int_fake_punt[int_fake_punt$displayName == 'Jordan Berry', ]$run_delay
+```
+
+The first play was a "direct snap" play, which may be why there is no "run" or "pass" associated with it. They gained 4 yards, but needed 5 to be successful.
+
+The second play was a failure because there was a fumble.
+```{r}
+int_fake_punt %>%
+  filter(displayName == 'Jordan Berry') %>%
+  select(c('gameId', 'playDescription'))
+```
+
+```{r}
+tracking %>%
+  filter(displayName == 'Jordan Berry') %>%
+  filter(event != 'None') %>%
+  select(c('gameId', 'event', 'frameId'))
+```
 
