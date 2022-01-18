@@ -49,7 +49,7 @@ int_fake_punt <- anti_join(fake_punt, aborted_punt)
 int_fake_punt <- inner_join(scouting, int_fake_punt)
 ```
 
-Next I will create two new variables to determine if the play was a pass or not, and if the play was successful or not (yard gained > yards to go).
+Next I will create two new variables to determine if the play was a pass or not, and if the play was successful or not (yards gained > yards to go).
 
 ```{r}
 int_fake_punt <- int_fake_punt %>%
@@ -80,6 +80,22 @@ As one would expect, having fewer yards to go until first down results in a high
 ggplot(int_fake_punt, aes(x = success, y = yardsToGo)) +
   geom_boxplot()
 ```
+
+There doesn't appear to be any meaningful connection between the quarter the play is made and success, even when considering yards to go.
+```{r}
+table(int_fake_punt$quarter, int_fake_punt$success)
+
+chisq.test(table(int_fake_punt$quarter, int_fake_punt$success))
+```
+
+```{r}
+ggplot(int_fake_punt, aes(x = yardsToGo, y = as.numeric(success), color = as.factor(quarter) ,group = as.factor(quarter))) +
+  geom_point() +
+  geom_smooth(method = 'glm',
+              method.args = list(family = 'binomial'),
+              se = TRUE)
+```
+
 
 30 plays in the dataset are pass plays, and 38 are run plays. 71.1% (27/38) of fake punts that are run plays are successful as opposed to 63.3% (19/30) of pass plays.
 ```{r}
@@ -119,7 +135,7 @@ int_fake_punt <- inner_join(int_fake_punt, home_away_df)
 ```
 
 There are 34 fake punts by both home and away teams. 70.6% of away team plays are successful, as opposed to 64.7% of home team plays. This seems counterintuitive as "home team advantage" would suggest that the away team would be less successful.
-```{r}
+```{r, warning = FALSE}
 table(int_fake_punt$home_away)
 
 int_fake_punt %>%
@@ -527,17 +543,20 @@ Looking at these different variables gives us a good idea of what things are imp
 
 
 ```{r message = FALSE}
-myvars <- c('success', 'quarter', 'yardsToGo', 'is_pass',
-            'home_away', 'points_down', 'poss_team_side',
+myvars <- c('success', 'yardsToGo', 'is_pass',
+            'points_down', 'poss_team_side',
             'punt_fake', 'pass_delay', 'run_delay',
-            'fake')
+            'fake', 'snap_to_fake', 'snap_to_fake_pf',
+            'd_snap_to_fake', 'd_snap_to_fake_pf')
 
 fp_tree <- int_fake_punt %>%
   select(myvars)
+
 ```
 
 ```{r}
-fake_punt_tree <- rpart(success ~ ., data = fp_tree[!(is.na(fp_tree$punt_fake)), ])
+fake_punt_tree <- rpart(success ~ ., data = fp_tree,
+                        control=rpart.control(minsplit=8, minbucket=4, cp=0.01))
 ```
 
 Unsurprisingly, yardsToGo is by far the most important variable in determining success. The timing of punt fake and delay between punt fake and passing are also important. Everything else is either of minimial or no importance.
@@ -547,8 +566,83 @@ fake_punt_tree$variable.importance
 
 The fitted tree only uses yardsToGo, pass_delay, is_pass and punt_fake. If a play has less than 3.5 yards to go and is a pass, it has a 94% chance of success. By contrast, if there are more than 3.5 yards to go and the pass delay is greater than 12 frames, there is only a 38% chance of success.
 ```{r}
-fancyRpartPlot(fake_punt_tree)
+fancyRpartPlot(fake_punt_tree, sub = 'Fake Punt Tree')
 ```
+
+[Split up punts with a fake vs those that don't and do separate trees]
+
+
+```{r, warning = FALSE}
+plays_with_fake <- int_fake_punt %>%
+  filter(!is.na(punt_fake))
+
+plays_wo_fake <- int_fake_punt %>%
+  filter(is.na(punt_fake))
+```
+
+
+```{r}
+with_fake_vars <- c('success', 'yardsToGo', 'is_pass',
+            'points_down','punt_fake', 'pass_delay', 'snap_to_fake', 'snap_to_fake_pf', 'd_snap_to_fake', 'd_snap_to_fake_pf')
+
+wo_fake_vars <- c('success', 'quarter', 'yardsToGo', 'is_pass',
+                  'home_away', 'points_down', 'poss_team_side',
+                  'next_event', 'snap_to_next', 'snap_to_next_pf')
+
+with_fake_tree <- plays_with_fake %>%
+  select(with_fake_vars)
+  
+wo_fake_tree <- plays_wo_fake %>%
+  select(wo_fake_vars)
+
+wo_fake_tree$quarter <- as.factor(wo_fake_tree$quarter)
+```
+
+
+```{r}
+with_fake <- rpart(success ~ ., data = with_fake_tree,
+                   control=rpart.control(minsplit=8, minbucket=4, cp=0.01))
+
+wo_fake <- rpart(success ~ ., data = wo_fake_tree,
+                      control=rpart.control(minsplit=4, minbucket=3, cp=0.01))
+```
+
+
+```{r}
+with_fake$variable.importance
+```
+
+```{r}
+wo_fake$variable.importance
+```
+
+
+```{r, warning = FALSE}
+fancyRpartPlot(with_fake, sub = 'Tree with punt fakes')
+fancyRpartPlot(wo_fake, sub = 'Tree w/o punt fakes')
+```
+
+
+
+
+
+Do real punts tend to have little movement as well?
+```{r, message = FALSE}
+real_punts <- plays %>%
+  filter(specialTeamsPlayType == 'Punt') %>%
+  filter(specialTeamsResult != 'Non-Special Teams Result')
+
+real_punt_track <- rbind(track_2018, track_2019, track_2020) %>%
+  filter(event != 'None') %>%
+  inner_join(real_punts)
+```
+
+```{r}
+
+```
+
+
+
 
 
 
@@ -560,6 +654,12 @@ whats_this <- int_fake_punt[(is.na(int_fake_punt2$pass_delay)) &
 
 whats_this$playDescription
 ```
+
+
+
+
+
+
 
 
 To wrap things up, I will try to determine who the "best" and "worst" fake punters are in the NFL by looking at the number of attempts and success rate.
