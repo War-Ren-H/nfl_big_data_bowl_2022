@@ -97,13 +97,15 @@ ggplot(int_fake_punt, aes(x = yardsToGo, y = as.numeric(success), color = as.fac
 ```
 
 
-30 plays in the dataset are pass plays, and 38 are run plays. 71.1% (27/38) of fake punts that are run plays are successful as opposed to 63.3% (19/30) of pass plays.
+30 plays in the dataset are pass plays, and 38 are run plays. 71.1% (27/38) of fake punts that are run plays are successful as opposed to 63.3% (19/30) of pass plays. The difference is not enough to be statistically significant.
 ```{r}
 table(int_fake_punt$is_pass)
 
 int_fake_punt %>%
   calculate(cro_rpct(is_pass, success)) %>%
   htmlTable()
+
+chisq.test(table(int_fake_punt$is_pass, int_fake_punt$success))
 ```
 
 Based on this graph, run plays have a higher chance of success than pass plays until approximately 8 yards to go. However, the margins of error in the lines of fit are very wide, so it's unclear if this is actually the case.
@@ -144,7 +146,7 @@ int_fake_punt %>%
 ```
 
 
-Based on the plot below, it looks like home teams have a higher chance of success until about 4 yards to go, and it starts dropping off. This may be because there are some "outlier" plays from home teams done from very far away. The farthest play from away teams was successful
+Based on the plot below, it looks like home teams have a higher chance of success until about 4 yards to go, and it starts dropping off. This may be because there are some "outlier" plays from home teams done from very far away. The farthest play from away teams was successful.
 ```{r}
 ggplot(int_fake_punt, aes(x = yardsToGo, y = as.numeric(success), color = home_away ,group = home_away)) +
   geom_point() +
@@ -187,6 +189,7 @@ int_fake_punt <- int_fake_punt %>%
   mutate(poss_team_side = ifelse(possessionTeam == yardlineSide, TRUE, FALSE))
 ```
 
+
 Slightly over half of fake punts on the opposing team's side of the field are successful, but over 70% of fake punts on the possessing team's side of the field are successful. This doesn't seem to be a significant difference with a Chi-Square test.
 ```{r}
 ##Replace this table later
@@ -195,7 +198,7 @@ table(int_fake_punt$poss_team_side, int_fake_punt$success)
 chisq.test(table(int_fake_punt$poss_team_side, int_fake_punt$success))
 ```
 
-Finding tackler positions (also for missed and assist tacklers)
+This next step will find tackler positions (also for missed and assist tacklers)
 
 ```{r}
 int_fake_punt <- int_fake_punt %>%
@@ -309,7 +312,7 @@ int_fake_punt <- int_fake_punt %>%
   unnest(event_names, keep_empty = TRUE)
 ```
 
-All snaps occur at frame 11.
+All snaps in this dataset occur at frame 11.
 ```{r}
 unique(int_fake_punt$ball_snap)
 ```
@@ -349,19 +352,19 @@ chisq.test(table(int_fake_punt$fake, int_fake_punt$success))
 ```
 
 
-Punt fake timing has a very uneven distribution, with a median of frame 21 (1 second after snap). There is one outlier at almost frame 60.
+Punt fake timing has a right-skewed distribution, with a median of frame 21 (10 frames/1 second after snap). There is one outlier close to frame 60.
 
 ```{r}
 ggplot(int_fake_punt, aes(x = punt_fake)) +
-  geom_histogram()
+  geom_histogram(bins = 10)
 ```
-
-```{r}
-ggplot(int_fake_punt, aes(x = punt_fake)) +
+Successful plays tend to perform the punt fake around the 19th frame, while for unsuccessful plays it's around the 23rd frame. The distribution for successful plays is very right-skewed, and has more extreme values despite the lower median.
+```{r, message = FALSE, warning = FALSE}
+ggplot(int_fake_punt, aes(x = success , y = punt_fake)) +
   geom_boxplot()
 ```
 
-There seems to be no to little relationship between how quickly a punt fake occurs and success. The high-leverage point was removed.
+There seems to be little relationship between how quickly a punt fake occurs and success. The high-leverage point was removed.
 
 ```{r}
 ggplot(int_fake_punt[int_fake_punt$punt_fake < 30, ], aes(x = punt_fake, y = as.numeric(success))) +
@@ -378,16 +381,22 @@ table(int_fake_punt$playDirection, int_fake_punt$success)
 chisq.test(table(int_fake_punt$playDirection, int_fake_punt$success))
 ```
 
+Plays from both directions have similar distributions and the same median for yardsToGo, so this does not explain their difference in success.
+```{r}
+ggplot(int_fake_punt, aes(x = playDirection, y = yardsToGo)) +
+  geom_boxplot()
+```
+
 
 ```{r}
 int_fake_punt <- int_fake_punt %>%
   mutate(pass_delay = pass_forward - punt_fake)
 ```
 
-Mean delay between punt fake and pass is 11.56 frames, which is 1.156 seconds.
+The mean delay between punt fake and pass is 11.56 frames, which is 1.156 seconds. Median delay is 10 frames/1 second.
 ```{r}
 ggplot(int_fake_punt2, aes(x = pass_delay)) +
-  geom_histogram()
+  geom_histogram(bins = 10)
 
 ggplot(int_fake_punt2, aes(x = pass_delay)) +
   geom_boxplot()
@@ -413,7 +422,7 @@ int_fake_punt <- int_fake_punt %>%
 Most runs start immediately after the fake punt (less than 5 frames).
 ```{r}
 ggplot(int_fake_punt, aes(x = run_delay)) +
-  geom_histogram()
+  geom_histogram(bins = 5)
 ```
 
 Unlike pass delay, run delay seems to have little to no effect on success. 
@@ -475,7 +484,8 @@ int_fake_punt <- int_fake_punt %>%
   mutate(d_snap_to_fake_pf = d_snap_to_fake/(punt_fake - 11))
 ```
 
-This difference is even more pronounced once you include the number of frames in between snap and fake. The 75th percentile of punter movement per frame for successful plays is approximately the median for unsuccessful plays. 
+This difference is even more pronounced once you include the number of frames in between snap and fake. The 75th percentile of punter movement per frame for successful plays is approximately the median for unsuccessful plays.
+
 ```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
 ggplot(int_fake_punt, aes(x = snap_to_fake_pf, y = as.numeric(success))) +
   geom_point() +
@@ -628,9 +638,6 @@ fancyRpartPlot(wo_fake, sub = 'Tree w/o punt fakes')
 ```
 
 
-
-
-
 Do real punts tend to have little movement as well?
 ```{r, message = FALSE}
 real_punts <- plays %>%
@@ -712,6 +719,7 @@ ggplot(real_punts, aes(x = snap_to_punt)) +
 
 
 Fake punters tend to move at about 0.01 yards per frame, while real punters tend to move slightly faster. Successful fake punters usually move slower than this, while unsuccessful fake punters usually move faster.
+
 ```{r, warning = FALSE, message = FALSE}
 ggplot(int_fake_punt, aes(x = snap_to_fake_pf)) +
   geom_boxplot()
@@ -723,7 +731,7 @@ ggplot(real_punts, aes(x = snap_to_punt_pf)) +
   geom_boxplot()
 ```
 
-Overall, successful fake punters perform their "punt" quicker, and move less distance at a shorter speed than true punters. Successful fake punts tend to be *less* similar to real punts in movement and play speed.
+Overall, successful fake punters perform their "punt" quicker, and move less distance at a slower speed than true punters. Successful fake punts tend to be *less* similar to real punts in movement and play speed.
 
 
 
