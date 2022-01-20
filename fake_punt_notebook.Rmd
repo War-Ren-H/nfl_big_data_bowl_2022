@@ -546,8 +546,8 @@ Looking at these different variables gives us a good idea of what things are imp
 myvars <- c('success', 'yardsToGo', 'is_pass',
             'points_down', 'poss_team_side',
             'punt_fake', 'pass_delay', 'run_delay',
-            'fake', 'snap_to_fake', 'snap_to_fake_pf',
-            'd_snap_to_fake', 'd_snap_to_fake_pf')
+            'snap_to_fake', 'snap_to_fake_pf',
+            'd_snap_to_fake', 'd_snap_to_fake_pf', 'snap_to_next_pf')
 
 fp_tree <- int_fake_punt %>%
   select(myvars)
@@ -607,16 +607,21 @@ wo_fake <- rpart(success ~ ., data = wo_fake_tree,
                       control=rpart.control(minsplit=4, minbucket=3, cp=0.01))
 ```
 
-
+By far the most important elements in determining success are the amount of movement, followed by the movement speed of the punter between the snap and punt fake. The timing of the punt fake itself is also very important. Yards to go is only about half as important as the timing of the punt fake, and only about 1/3 as important as the punter's movement.
 ```{r}
 with_fake$variable.importance
 ```
 
+Similar to plays that have a punt fake, the amount and speed of movement by the punter between events is the most important element.
 ```{r}
 wo_fake$variable.importance
 ```
 
+Recipe for disaster: Punter moving faster than 0.011 yards per frame, moving less than 0.18 yards total and punt faking at the 19th frame or later (8 frames after snap). None of the 5 plays that met this criteria were successful.
 
+Recipe for success A: Punter moves slower than 0.011 yards per frame and takes less than 13 frames to pass after punt faking (or not performing a pass play at all). 100% chance of success in this dataset.
+
+Recipe for success B: Punter moves slower than 0.011 yards per frame and takes more than 13 frames to pass, moves fewer than 0.045 yards in total and performs the punt fake on the 17th or later frame. 100% chance of success. (Punt faking before the 17th frame in this scenario is still a 75% chance). 
 ```{r, warning = FALSE}
 fancyRpartPlot(with_fake, sub = 'Tree with punt fakes')
 fancyRpartPlot(wo_fake, sub = 'Tree w/o punt fakes')
@@ -638,24 +643,87 @@ real_punt_track <- rbind(track_2018, track_2019, track_2020) %>%
 ```
 
 ```{r}
-
+unique(real_punt_track$event)
 ```
 
+```{r, message = FALSE}
+real_punt_events <- real_punt_track %>%
+  select(c('gameId', 'playId', 'displayName', 'position', 'event', 'playDirection', 'frameId')) %>%
+  filter(event == 'ball_snap' | event == 'punt') %>%
+  filter(position == 'P') %>%
+  group_by(across(all_of(c('playId', 'gameId')))) %>%
+  pivot_wider(names_from = event, values_from = frameId) %>%
+  select(-c('position'))
 
+real_punts <- inner_join(real_punts, real_punt_events)
+```
 
-
-
-
-The plays with no pass or run are all direct snaps.
-[Make a column that determines which category this falls into and compare!]
+The vast majority of real punt plays have the snap happen on frame 11. In the fake punt plays, they were *all* on frame 11. 
 ```{r}
-whats_this <- int_fake_punt[(is.na(int_fake_punt2$pass_delay)) &
-                             (is.na(int_fake_punt2$run_delay)), ]
+table(real_punts$ball_snap)
+```
 
-whats_this$playDescription
+There is a major difference between real and fake punts as to when the "punt" is made. 
+
+In fake punts, the punt fake most usually happens 10 frames after the snap. In real punts, it's almost always 21-22 frames after the snap. Successful fake punts generally have less time between these events, so perhaps....
+```{r}
+ggplot(int_fake_punt, aes(x = punt_fake - 11, y = success)) +
+  geom_boxplot()
+
+ggplot(int_fake_punt, aes(x = punt_fake - 11)) +
+  geom_boxplot()
+
+ggplot(real_punts, aes(x = punt - ball_snap)) +
+  geom_boxplot()
+```
+
+```{r, message = FALSE}
+punters_only2 <- real_punt_track[real_punt_track$position == 'P', ]
+
+movement_2 <- punters_only2 %>%
+  group_by(across(all_of(c('playId', 'gameId')))) %>%
+  summarise(snap_to_punt = dis[match('punt', event)] -
+              dis[match('ball_snap', event)])
+
+real_punts <- real_punts %>%
+  inner_join(movement_2)
 ```
 
 
+```{r}
+real_punts <- real_punts %>%
+  mutate(snap_to_punt_pf = snap_to_punt/(punt - ball_snap))
+```
+
+
+Total punter movement between snap and punt fake tends to be slightly less than total punter movement between snap and punt. The difference here is far less dramatic than the "punt" timing above.
+
+Fake punters tend to move about 0.17 yards between events. Real punters tend to move about 0.23 yards. Again, the unsuccessful fake punts are more similar to the real thing in this regard.
+```{r}
+ggplot(int_fake_punt, aes(x = snap_to_fake)) +
+  geom_boxplot()
+
+ggplot(int_fake_punt, aes(x = snap_to_fake, y = success)) +
+  geom_boxplot() 
+
+ggplot(real_punts, aes(x = snap_to_punt)) +
+  geom_boxplot()
+```
+
+
+Fake punters tend to move at about 0.01 yards per frame, while real punters tend to move slightly faster. Successful fake punters usually move slower than this, while unsuccessful fake punters usually move faster.
+```{r, warning = FALSE, message = FALSE}
+ggplot(int_fake_punt, aes(x = snap_to_fake_pf)) +
+  geom_boxplot()
+
+ggplot(int_fake_punt, aes(x = snap_to_fake_pf, y = success)) +
+  geom_boxplot() 
+
+ggplot(real_punts, aes(x = snap_to_punt_pf)) +
+  geom_boxplot()
+```
+
+Overall, successful fake punters perform their "punt" quicker, and move less distance at a shorter speed than true punters. Successful fake punts tend to be *less* similar to real punts in movement and play speed.
 
 
 
