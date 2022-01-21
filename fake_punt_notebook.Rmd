@@ -544,11 +544,6 @@ ggplot(int_fake_punt, aes(x = snap_to_next_pf, y = success)) +
 
 
 
-
-
-
-
-
 Looking at these different variables gives us a good idea of what things are important in determining success of a fake punt. However, it would be more valuable to see how everything interacts together. For that purpose, I will be using a basic decision tree. It will show every meaningful scenario and chance of success for each one (based on our data). 
 
 
@@ -569,18 +564,31 @@ fake_punt_tree <- rpart(success ~ ., data = fp_tree,
                         control=rpart.control(minsplit=8, minbucket=4, cp=0.01))
 ```
 
-Unsurprisingly, yardsToGo is by far the most important variable in determining success. The timing of punt fake and delay between punt fake and passing are also important. Everything else is either of minimial or no importance.
+
+The most important ingredients to a successful fake punt are: 
+- Distance the punter moves between snap and punt fake (snap_to_fake)
+- The speed the punter moves between snap and punt fake (snap_to_fake_pf)
+- The timing of the punt fake (punt_fake)
+- How many yards to go (yardsToGo)
+
+The movement variables are over 2x more important than yards to go. The timing of punt fake is 50% more important than yards to go. The other variables are not as important.
+
 ```{r}
 fake_punt_tree$variable.importance
 ```
 
-The fitted tree only uses yardsToGo, pass_delay, is_pass and punt_fake. If a play has less than 3.5 yards to go and is a pass, it has a 94% chance of success. By contrast, if there are more than 3.5 yards to go and the pass delay is greater than 12 frames, there is only a 38% chance of success.
+Only 46% of plays where the punter moves more than 0.011 yards/frame between snap and punt fake are successful. Chance of success goes up to 83% if total movement between snap and punt fake is between 0.18 and 0.36 yards and there are 6 or fewer yards to go. 
+
+82% of plays are successful if he moves slower than 0.011 yards/frame.
+
+If the delay between punt fake and pass is at least 13 frames, chance of success is much higher if the punter moves less than 0.045 yards between the snap and punt fake.
+
+However, there is an issue with this tree. If pass delay is less than 13 frames, the tree goes to "snap_to_next_pf" which is movement speed between snap and next event where there is no punt fake. Plays with a low pass delay are being lumped with run plays and plays with no punt fake at all in the bottom right node of the tree.
 ```{r}
 fancyRpartPlot(fake_punt_tree, sub = 'Fake Punt Tree')
 ```
 
-[Split up punts with a fake vs those that don't and do separate trees]
-
+As mentioned above, some plays are strange in the sense that they do not have a "punt fake" event, and that creates some confusing results in the decision tree. It may be valuable to look at these two scenarios in their own 2 trees instead of 1.
 
 ```{r, warning = FALSE}
 plays_with_fake <- int_fake_punt %>%
@@ -590,13 +598,12 @@ plays_wo_fake <- int_fake_punt %>%
   filter(is.na(punt_fake))
 ```
 
-
 ```{r}
 with_fake_vars <- c('success', 'yardsToGo', 'is_pass',
             'points_down','punt_fake', 'pass_delay', 'snap_to_fake', 'snap_to_fake_pf', 'd_snap_to_fake', 'd_snap_to_fake_pf')
 
-wo_fake_vars <- c('success', 'quarter', 'yardsToGo', 'is_pass',
-                  'home_away', 'points_down', 'poss_team_side',
+wo_fake_vars <- c('success', 'yardsToGo', 
+                  'points_down', 
                   'next_event', 'snap_to_next', 'snap_to_next_pf')
 
 with_fake_tree <- plays_with_fake %>%
@@ -605,7 +612,7 @@ with_fake_tree <- plays_with_fake %>%
 wo_fake_tree <- plays_wo_fake %>%
   select(wo_fake_vars)
 
-wo_fake_tree$quarter <- as.factor(wo_fake_tree$quarter)
+#wo_fake_tree$quarter <- as.factor(wo_fake_tree$quarter)
 ```
 
 
@@ -614,18 +621,25 @@ with_fake <- rpart(success ~ ., data = with_fake_tree,
                    control=rpart.control(minsplit=8, minbucket=4, cp=0.01))
 
 wo_fake <- rpart(success ~ ., data = wo_fake_tree,
-                      control=rpart.control(minsplit=4, minbucket=3, cp=0.01))
+                      control=rpart.control(minsplit=4, minbucket=2, cp=0.01))
 ```
 
-By far the most important elements in determining success are the amount of movement, followed by the movement speed of the punter between the snap and punt fake. The timing of the punt fake itself is also very important. Yards to go is only about half as important as the timing of the punt fake, and only about 1/3 as important as the punter's movement.
+First I will make the tree for plays with punt fakes.
+
+
+Similar to above, the most important variables are:
+- Total punter movement between snap and punt fake (snap_to_fake)
+- Speed of punter movement between snap and punt fake (snap_to_fake_pf)
+- Timing of the punt fake (punt_fake)
+- Number of yards to go (YardsToGo)
+
+However, yardsToGo isn't quite as important as it was in the first tree.
 ```{r}
 with_fake$variable.importance
 ```
 
-Similar to plays that have a punt fake, the amount and speed of movement by the punter between events is the most important element.
-```{r}
-wo_fake$variable.importance
-```
+
+Highlights from tree with only punt fakes:
 
 Recipe for disaster: Punter moving faster than 0.011 yards per frame, moving less than 0.18 yards total and punt faking at the 19th frame or later (8 frames after snap). None of the 5 plays that met this criteria were successful.
 
@@ -634,6 +648,21 @@ Recipe for success A: Punter moves slower than 0.011 yards per frame and takes l
 Recipe for success B: Punter moves slower than 0.011 yards per frame and takes more than 13 frames to pass, moves fewer than 0.045 yards in total and performs the punt fake on the 17th or later frame. 100% chance of success. (Punt faking before the 17th frame in this scenario is still a 75% chance). 
 ```{r, warning = FALSE}
 fancyRpartPlot(with_fake, sub = 'Tree with punt fakes')
+
+```
+
+Next is the tree with no punt fake.
+
+Similar to plays that have a punt fake, the amount and speed of movement by the punter between events are the most important variables. Yards to go is relatively more important here than for plays with a punt fake.
+```{r}
+wo_fake$variable.importance
+```
+
+
+Summary of tree with no punt fakes:
+
+Moving slower than 0.018 yards per frame from snap to next event "guarantees" success. Moving faster than this leads to a poor chance of success unless there are 3 or fewer yards to go.
+```{r, warning = FALSE}
 fancyRpartPlot(wo_fake, sub = 'Tree w/o punt fakes')
 ```
 
